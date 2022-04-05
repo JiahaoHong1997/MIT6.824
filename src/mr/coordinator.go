@@ -19,9 +19,9 @@ type Coordinator struct {
 	nReducer       int
 	lock           sync.Mutex
 
-	workerNum   int
-	workerDone  []chan int
-	mapFinished []bool
+	workerNum    int
+	workerDone   []chan int
+	rejectResult []bool
 
 	fileLock             sync.Mutex
 	reduceFiles          [][]string
@@ -41,14 +41,16 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+// Hello: Construct RPC connection with workers and distribute workerNum to each worker
 func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 	if args.X == "hongjiahao" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
 		reply.Y = c.workerNum
 		c.workerDone[c.workerNum] = make(chan int)
-		c.mapFinished = append(c.mapFinished, false)
+		c.rejectResult = append(c.rejectResult, false)
 		c.workerNum++
+
 		if c.workerNum > len(c.workerDone) {
 			t := make([]chan int, 20)
 			c.workerDone = append(c.workerDone, t...)
@@ -70,6 +72,7 @@ func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 
 		c.unfinishedFile = append(c.unfinishedFile, c.fileName[n-1])
 		c.fileName = c.fileName[:n-1]
+		c.rejectResult[args.WorkerNum] = false
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		go ifMapFinished(c, ctx, cancel, reply.FileName, args.WorkerNum)
@@ -86,15 +89,17 @@ func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 }
 
 func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) error {
+
 	if args.X == false {
-		c.mapFinished[args.WorkerNum] = false
 		return nil
 	}
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if c.mapFinished[args.WorkerNum] {
-		c.mapFinished[args.WorkerNum] = false
+
+	// If Got the ReduceFiles within 10s but Overtime because of RPC Latency
+	if c.rejectResult[args.WorkerNum] {
+		c.rejectResult[args.WorkerNum] = false
 		return nil
 	}
 
@@ -159,7 +164,7 @@ func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFun
 			if c.unfinishedFile[i] == filename {
 				c.unfinishedFile = append(c.unfinishedFile[:i], c.unfinishedFile[i+1:]...)
 				c.fileName = append(c.fileName, filename)
-				c.mapFinished[workerNum] = true
+				c.rejectResult[workerNum] = true
 				return
 			}
 		}

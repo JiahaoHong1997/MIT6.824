@@ -41,7 +41,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	finished, fileName, nReducer := CallMapTask(workerNum)
 	fmt.Println(finished, fileName, nReducer)
 
-	time.Sleep(11 * time.Second)
 	CallFinishMap([]string{"1-1", "1-2", "1-3", "", "", "", "", "", "", ""}, true, workerNum)
 	time.Sleep(1 * time.Hour)
 }

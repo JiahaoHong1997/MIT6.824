@@ -3,8 +3,8 @@ package mr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -16,12 +16,10 @@ import "net/http"
 type Coordinator struct {
 	// Your definitions here.
 	fileName       []string
-	fileHash       map[string]int
 	unfinishedFile []string
 	nReducer       int
 	lock           sync.Mutex
 
-	workerLock sync.Mutex
 	workerNum  int
 	workerDone []chan int
 
@@ -29,7 +27,6 @@ type Coordinator struct {
 	reduceFiles          [][]string
 	unFinishedReduceFile [][]string
 	finalFiles           []string
-	reduceDone           []chan int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -46,10 +43,15 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 	if args.X == "hongjiahao" {
-		c.workerLock.Lock()
-		defer c.workerLock.Unlock()
+		c.lock.Lock()
+		defer c.lock.Unlock()
 		reply.Y = c.workerNum
+		c.workerDone[c.workerNum] = make(chan int)
 		c.workerNum++
+		if c.workerNum > len(c.workerDone) {
+			t := make([]chan int, 20)
+			c.workerDone = append(c.workerDone, t...)
+		}
 		return nil
 	}
 	return errors.New("cannot build connection!")
@@ -67,9 +69,10 @@ func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 
 		c.unfinishedFile = append(c.unfinishedFile, c.fileName[n-1])
 		c.fileName = c.fileName[:n-1]
+		fmt.Println(c.fileName)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		go ifMapFinished(c, ctx, cancel, reply.FileName)
+		go ifMapFinished(c, ctx, cancel, reply.FileName, args.WorkerNum)
 	} else if len(c.unfinishedFile) > 0 {
 		reply.FileName = ""
 		reply.NReducer = c.nReducer
@@ -87,10 +90,10 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 		return nil
 	}
 
+	c.workerDone[args.WorkerNum] <- 1
+
 	c.fileLock.Lock()
 	defer c.fileLock.Unlock()
-	c.workerDone[c.fileHash[args.OriginFile]] <- 1
-
 	for i := 0; i < c.nReducer; i++ {
 		c.reduceFiles[i] = append(c.reduceFiles[i], args.FileName[i])
 	}
@@ -112,7 +115,7 @@ func (c *Coordinator) ReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) e
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
-		go ifReduceFinished(c, ctx, cancel, reply.ReducerFile)
+		go ifReduceFinished(c, ctx, cancel, reply.ReducerFile, args.WorkerNum)
 	} else if len(c.unFinishedReduceFile) > 0 {
 		reply.Finished = false
 		reply.ReducerFile = nil
@@ -131,8 +134,8 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 
 	c.fileLock.Lock()
 	defer c.fileLock.Unlock()
-	x, _ := strconv.Atoi(args.OriginFile[len(args.OriginFile)-1:])
-	c.reduceDone[x] <- 1
+
+	c.workerDone[args.WorkerNum] <- 1
 	c.finalFiles = append(c.finalFiles, args.File)
 
 	reply.Y = 1
@@ -140,7 +143,10 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 	return nil
 }
 
-func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFunc, filename string) {
+func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFunc, filename string, workerNum int) {
+
+	fmt.Println("finished", workerNum)
+	fmt.Println(c.workerDone)
 	select {
 	case <-ctx.Done():
 		c.lock.Lock()
@@ -152,9 +158,10 @@ func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFun
 				return
 			}
 		}
-	case <-c.workerDone[c.fileHash[filename]]:
+	case <-c.workerDone[workerNum]:
 		c.lock.Lock()
 		defer c.lock.Unlock()
+		
 		for i := 0; i < len(c.unfinishedFile); i++ {
 			if c.unfinishedFile[i] == filename {
 				c.unfinishedFile = append(c.unfinishedFile[:i], c.unfinishedFile[i+1:]...)
@@ -164,10 +171,8 @@ func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFun
 	cancel()
 }
 
-func ifReduceFinished(c *Coordinator, ctx context.Context, cancel context.CancelFunc, reduceFiles []string) {
-
-	f := reduceFiles[0]
-	x, _ := strconv.Atoi(f[len(f)-1:])
+func ifReduceFinished(c *Coordinator, ctx context.Context, cancel context.CancelFunc,
+	reduceFiles []string, workerNum int) {
 
 	select {
 	case <-ctx.Done():
@@ -180,7 +185,7 @@ func ifReduceFinished(c *Coordinator, ctx context.Context, cancel context.Cancel
 				return
 			}
 		}
-	case <-c.workerDone[x]:
+	case <-c.workerDone[workerNum]:
 		c.lock.Lock()
 		defer c.lock.Unlock()
 		for i := 0; i < len(c.unFinishedReduceFile); i++ {
@@ -227,20 +232,14 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
-	doneCh := make([]chan int, len(files))
-	reduceDone := make([]chan int, nReduce)
-	m := make(map[string]int)
-	for i := 0; i < len(files); i++ {
-		m[files[i]] = i
-	}
+	workerDone := make([]chan int, 20)
 
 	c := Coordinator{
 		fileName: files,
-		fileHash: m,
 		nReducer: nReduce,
 
-		workerDone: doneCh,
-		reduceDone: reduceDone,
+		workerDone:  workerDone,
+		reduceFiles: make([][]string, nReduce),
 	}
 
 	// Your code here.

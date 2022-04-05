@@ -36,7 +36,7 @@ type HelloReply struct {
 
 // Map tasks Arguments and Reply
 type MapArgs struct {
-	X int
+	WorkerNum int
 }
 
 type MapReply struct {
@@ -47,9 +47,9 @@ type MapReply struct {
 
 // Finish Map Task
 type FinishMapArgs struct {
-	X          bool
-	OriginFile string
-	FileName   []string
+	X         bool
+	WorkerNum int
+	FileName  []string
 }
 
 type FinishMapReply struct {
@@ -58,7 +58,7 @@ type FinishMapReply struct {
 
 // Reduce Task
 type ReduceTaskArgs struct {
-	X int
+	WorkerNum int
 }
 
 type ReduceTaskReply struct {
@@ -68,9 +68,9 @@ type ReduceTaskReply struct {
 
 // Finish Reduce Task
 type FinishReduceArgs struct {
-	X          bool
-	OriginFile string
-	File       string
+	X         bool
+	WorkerNum int
+	File      string
 }
 
 type FinishReduceReply struct {

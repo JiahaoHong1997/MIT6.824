@@ -41,7 +41,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	finished, fileName, nReducer := CallMapTask(workerNum)
 	fmt.Println(finished, fileName, nReducer)
 
-	CallFinishMap([]string{"1-1", "1-2", "1-3"}, true, fileName)
+	CallFinishMap([]string{"1-1", "1-2", "1-3", "", "", "", "", "", "", ""}, true, workerNum)
 	time.Sleep(1 * time.Hour)
 }
 
@@ -89,7 +89,7 @@ func CallHello() int {
 // Try to Get the Map Task, if the Map Stage have Finished, will recieve the signal to break and turn to CallReduceTask
 func CallMapTask(workerNum int) (bool, string, int) {
 	args := MapArgs{}
-	args.X = workerNum
+	args.WorkerNum = workerNum
 	reply := MapReply{}
 	ok := call("Coordinator.MapTask", &args, &reply)
 	if ok && reply.FileName != "" {
@@ -108,10 +108,10 @@ func CallMapTask(workerNum int) (bool, string, int) {
 
 // Reply to Coordinator Whether Finish the Map Task or not, if Finish the Task, will Turn to Exe CallReduceTask
 // If cannot Finish the Map Task in Resonable Time(10 seconds), will not Get the Channel and Turn to Exe CallMapTask
-func CallFinishMap(files []string, f bool, fileName string) {
+func CallFinishMap(files []string, f bool, workerNum int) {
 	args := FinishMapArgs{}
 	args.X = f
-	args.OriginFile = fileName
+	args.WorkerNum = workerNum
 	args.FileName = files
 	reply := FinishMapReply{}
 	ok := call("Coordinator.FinishMap", &args, &reply)
@@ -125,7 +125,7 @@ func CallFinishMap(files []string, f bool, fileName string) {
 // Try to Get Reduce Task Until Get One or the Whole Work Finished
 func CallReduceTask(workerNum int) (bool, []string) {
 	args := ReduceTaskArgs{}
-	args.X = workerNum
+	args.WorkerNum = workerNum
 	reply := ReduceTaskReply{}
 	ok := call("Coordinator.ReduceTask", &args, &reply)
 	if ok && reply.ReducerFile != nil && !reply.Finished {

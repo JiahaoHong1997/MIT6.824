@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ type Coordinator struct {
 	unfinishedFile []string
 	nReducer       int
 	lock           sync.Mutex
+	jobNum         int
 
 	workerNum    int
 	workerDone   []chan int
@@ -70,10 +72,12 @@ func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 		reply.FileName = c.fileName[n-1]
 		reply.NReducer = c.nReducer
 		reply.Finished = false
+		reply.JobId = c.jobNum
 
 		c.unfinishedFile = append(c.unfinishedFile, c.fileName[n-1])
 		c.fileName = c.fileName[:n-1]
 		c.rejectResult[args.WorkerNum] = false
+		c.jobNum++
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		go ifMapFinished(c, ctx, cancel, reply.FileName, args.WorkerNum)
@@ -102,6 +106,10 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 	// If get the reduceFiles within 10s but overtime because of RPC latency
 	if c.rejectResult[args.WorkerNum] {
 		c.rejectResult[args.WorkerNum] = false
+		err := os.RemoveAll("mapTask" + strconv.Itoa(args.JobId))
+		if err != nil {
+			log.Println(err)
+		}
 		return nil
 	}
 

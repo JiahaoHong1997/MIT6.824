@@ -1,7 +1,14 @@
 package mr
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 import "log"
@@ -38,10 +45,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	workerNum := CallHello()
 	fmt.Println(workerNum)
-	finished, fileName, nReducer := CallMapTask(workerNum)
-	fmt.Println(finished, fileName, nReducer)
+	finished, fileName, nReducer, jobId := CallMapTask(workerNum)
+	fmt.Println(finished, fileName, jobId)
 
-	CallFinishMap([]string{"1-1", "1-2", "1-3", "", "", "", "", "", "", ""}, true, workerNum)
+	if !finished && fileName != "" {
+		reduceFiles, ok := mapTask(fileName, nReducer, jobId, mapf)
+		fmt.Println(reduceFiles, ok)
+		CallFinishMap(reduceFiles, ok, workerNum, jobId)
+	}
+
 	time.Sleep(1 * time.Hour)
 }
 
@@ -87,32 +99,34 @@ func CallHello() int {
 }
 
 // Try to Get the Map Task, if the Map Stage have Finished, will recieve the signal to break and turn to CallReduceTask
-func CallMapTask(workerNum int) (bool, string, int) {
+func CallMapTask(workerNum int) (bool, string, int, int) {
 	args := MapArgs{}
 	args.WorkerNum = workerNum
 	reply := MapReply{}
 	ok := call("Coordinator.MapTask", &args, &reply)
 	if ok && reply.FileName != "" {
-		return false, reply.FileName, reply.NReducer
+		return false, reply.FileName, reply.NReducer, reply.JobId
 	}
 
 	for ok && !reply.Finished {
+		time.Sleep(1 * time.Second)
 		ok = call("Coordinator.MapTask", &args, &reply)
 		if ok && reply.FileName != "" {
-			return false, reply.FileName, reply.NReducer
+			return false, reply.FileName, reply.NReducer, reply.JobId
 		}
 	}
 
-	return true, "", reply.NReducer
+	return true, "", reply.NReducer, reply.JobId
 }
 
-// Reply to Coordinator Whether Finish the Map Task or not, if Finish the Task, will Turn to Exe CallReduceTask
+// CallFinishMap: Reply to Coordinator Whether Finish the Map Task or not, if Finish the Task, will Turn to Exe CallReduceTask
 // If cannot Finish the Map Task in Resonable Time(10 seconds), will not Get the Channel and Turn to Exe CallMapTask
-func CallFinishMap(files []string, f bool, workerNum int) {
+func CallFinishMap(files []string, f bool, workerNum int, jobId int) {
 	args := FinishMapArgs{}
 	args.X = f
 	args.WorkerNum = workerNum
 	args.FileName = files
+	args.JobId = jobId
 	reply := FinishMapReply{}
 	ok := call("Coordinator.FinishMap", &args, &reply)
 	for !ok {
@@ -122,7 +136,7 @@ func CallFinishMap(files []string, f bool, workerNum int) {
 	return
 }
 
-// Try to Get Reduce Task Until Get One or the Whole Work Finished
+// CallReduceTask: Try to get reduce task until get one or the whole work finished
 func CallReduceTask(workerNum int) (bool, []string) {
 	args := ReduceTaskArgs{}
 	args.WorkerNum = workerNum
@@ -142,7 +156,7 @@ func CallReduceTask(workerNum int) (bool, []string) {
 	return false, reply.ReducerFile
 }
 
-// Reply to Coordinator Whether Finish Reduce Task or not, after that, worker Turn to CallReduceTask Again
+// CallFinishReduce: Reply to coordinator whether finish reduce task or not, after that, worker turn to CallReduceTask again
 func CallFinishReduce(fileName string, f bool, workerNum int) {
 	args := FinishReduceArgs{}
 	args.X = f
@@ -178,4 +192,67 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+//
+func mapTask(filename string, nReducer int, jobId int, mapf func(string, string) []KeyValue) ([]string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	intermediate := [][]KeyValue{}
+	for i := 0; i < nReducer; i++ {
+		t := []KeyValue{}
+		intermediate = append(intermediate, t)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+
+	err = os.Mkdir("mapTask"+strconv.Itoa(jobId), os.ModePerm)
+	content, err := ioutil.ReadAll(file)
+	file.Close()
+	kva := mapf(filename, string(content))
+	for i := 0; i < len(kva); i++ {
+		index := ihash(kva[i].Key) % 10
+		intermediate[index] = append(intermediate[index], kva[i])
+	}
+
+	for i := 0; i < nReducer; i++ {
+		s := "mapTmp-" + strconv.Itoa(jobId) + "-" + strconv.Itoa(i) + "-"
+		tmpfile, err := ioutil.TempFile("./", s)
+		defer os.Remove(tmpfile.Name())
+		if err != nil {
+			log.Println(err)
+		}
+
+		enc := json.NewEncoder(tmpfile)
+		for _, kv := range intermediate[i] {
+			err = enc.Encode(&kv)
+			if err != nil {
+				log.Println(err)
+			}
+		}
+	}
+
+	reduceFiles := []string{}
+	select {
+	case <-ctx.Done():
+		os.RemoveAll("mapTask" + strconv.Itoa(jobId))
+		return nil, false
+	default:
+		tmpFiles, err := filepath.Glob("mapTmp-" + strconv.Itoa(jobId) + "*")
+		if err != nil {
+			log.Println(err)
+		}
+		for i := 0; i < len(tmpFiles); i++ {
+			str := strings.Split(tmpFiles[i], "-")
+			newName := "mr-" + strconv.Itoa(jobId) + "-" + str[2]
+			err = os.Rename(tmpFiles[i], "mapTask"+strconv.Itoa(jobId)+"/"+newName)
+			reduceFiles = append(reduceFiles, "mapTask"+strconv.Itoa(jobId)+"/"+newName)
+		}
+	}
+
+	return reduceFiles, true
 }

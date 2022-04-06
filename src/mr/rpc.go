@@ -43,6 +43,7 @@ type MapReply struct {
 	NReducer int
 	Finished bool
 	FileName string
+	JobId    int
 }
 
 // Finish Map Task
@@ -50,6 +51,7 @@ type FinishMapArgs struct {
 	X         bool
 	WorkerNum int
 	FileName  []string
+	JobId     int
 }
 
 type FinishMapReply struct {

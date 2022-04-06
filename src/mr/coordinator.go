@@ -60,6 +60,7 @@ func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 	return errors.New("cannot build connection!")
 }
 
+// MapTask: Distribute map task to workers and enable timer function
 func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 
 	c.lock.Lock()
@@ -88,6 +89,7 @@ func (c *Coordinator) MapTask(args *MapArgs, reply *MapReply) error {
 	return nil
 }
 
+// FinishMap: Reply to the completion task response of workers, and determine whether the map task timed out due to rpc latency
 func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) error {
 
 	if args.X == false {
@@ -97,7 +99,7 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	// If Got the ReduceFiles within 10s but Overtime because of RPC Latency
+	// If get the reduceFiles within 10s but overtime because of RPC latency
 	if c.rejectResult[args.WorkerNum] {
 		c.rejectResult[args.WorkerNum] = false
 		return nil
@@ -154,6 +156,7 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 	return nil
 }
 
+// ifMapFinished: Monitor whether the map task times out and update the task status
 func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFunc, filename string, workerNum int) {
 
 	select {

@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.

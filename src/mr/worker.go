@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	for !mapFinished {
 		if fileName != "" {
 			reduceFiles, ok := mapTask(fileName, nReducer, jobId, mapf)
-			fmt.Println(reduceFiles, ok)
+			//fmt.Println(reduceFiles, ok)
 			CallFinishMap(reduceFiles, ok, workerNum, jobId)
 		}
 		time.Sleep(1 * time.Second)
@@ -59,10 +60,17 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	ReduceFinished, fileNames, jobId := CallReduceTask(workerNum)
-	fmt.Println(ReduceFinished, fileNames, jobId)
-	time.Sleep(10 * time.Second)
-	CallFinishReduce(strconv.Itoa(jobId), true, workerNum)
-	time.Sleep(1 * time.Hour)
+	//fmt.Println(ReduceFinished, fileNames, jobId)
+	for !ReduceFinished {
+		if fileNames != nil {
+			fName, f := reduceTask(fileNames, jobId, reducef)
+			CallFinishReduce(fName, f, workerNum)
+		}
+		time.Sleep(1 * time.Second)
+		ReduceFinished, fileNames, jobId = CallReduceTask(workerNum)
+	}
+
+	CallShutdown()
 }
 
 //
@@ -149,15 +157,13 @@ func CallReduceTask(workerNum int) (bool, []string, int) {
 	args := ReduceTaskArgs{}
 	args.WorkerNum = workerNum
 	reply := ReduceTaskReply{}
-	fmt.Println(22222)
 	ok := call("Coordinator.ReduceTask", &args, &reply)
-	fmt.Println(33333)
+
 	if ok && reply.ReducerFile != nil {
 		return false, reply.ReducerFile, reply.JobId
 	}
 
 	for ok && !reply.Finished {
-		fmt.Println(44444)
 		time.Sleep(1 * time.Second)
 		ok = call("Coordinator.ReduceTask", &args, &reply)
 		if ok && reply.ReducerFile != nil {
@@ -181,6 +187,29 @@ func CallFinishReduce(fileName string, f bool, workerNum int) {
 	}
 
 	return
+}
+
+func CallShutdown() bool {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	args := ExitArgs{}
+	args.X = true
+	reply := ExitReply{}
+
+	var ok bool
+
+	for !ok {
+		select {
+		case <-ctx.Done():
+			return true
+		default:
+			ok = call("Coordinator.Shutdown", &args, &reply)
+		}
+	}
+
+	return reply.Y
 }
 
 //
@@ -267,4 +296,68 @@ func mapTask(filename string, nReducer int, jobId int, mapf func(string, string)
 	}
 
 	return reduceFiles, true
+}
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
+func reduceTask(fileNames []string, jobId int, reducef func(string, []string) string) (string, bool) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var kva []KeyValue
+	for i := 0; i < len(fileNames); i++ {
+		fileName := fileNames[i]
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+		}
+
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+	}
+
+	sort.Sort(ByKey(kva))
+
+	oname := "mr-" + strconv.Itoa(jobId) + "-" + fileNames[0][len(fileNames[0])-1:]
+	ofile, _ := os.Create(oname)
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+	select {
+	case <-ctx.Done():
+		return "", false
+	default:
+		return oname, true
+	}
 }

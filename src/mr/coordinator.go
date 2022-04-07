@@ -3,10 +3,11 @@ package mr
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 import "net"
@@ -22,7 +23,7 @@ type Coordinator struct {
 	lock           sync.Mutex
 	jobNum         int
 
-	workerNum    int
+	workerNum    int32
 	workerDone   []chan int
 	rejectResult []bool
 
@@ -30,6 +31,8 @@ type Coordinator struct {
 	reduceFiles          [][]string
 	unFinishedReduceFile [][]string
 	finalFiles           []string
+
+	exitValue atomic.Value
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -49,12 +52,12 @@ func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 	if args.X == "hongjiahao" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
-		reply.Y = c.workerNum
-		c.workerDone[c.workerNum] = make(chan int)
+		reply.Y = int(c.workerNum)
+		c.workerDone[reply.Y] = make(chan int)
 		c.rejectResult = append(c.rejectResult, false)
-		c.workerNum++
+		atomic.AddInt32(&c.workerNum, 1)
 
-		if c.workerNum > len(c.workerDone) {
+		if int(c.workerNum) > len(c.workerDone) {
 			t := make([]chan int, 20)
 			c.workerDone = append(c.workerDone, t...)
 		}
@@ -121,7 +124,7 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 	}
 
 	reply.Y = 1
-	if len(c.fileName) == 0 && len(c.unfinishedFile) == 1 {
+	if len(c.fileName) == 0 && len(c.unfinishedFile) <= 1 {
 		c.mapFinished = true
 	}
 
@@ -129,9 +132,10 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 }
 
 func (c *Coordinator) ReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	if len(c.reduceFiles) > 0 {
-		c.lock.Lock()
-		defer c.lock.Unlock()
+
 		if !c.mapFinished {
 			return nil
 		}
@@ -170,14 +174,38 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 
 	if c.rejectResult[args.WorkerNum] {
 		c.rejectResult[args.WorkerNum] = false
+		err := os.Remove(args.File)
+		if err != nil {
+			log.Println(err)
+		}
 		return nil
 	}
 
 	c.workerDone[args.WorkerNum] <- 1
-	c.finalFiles = append(c.finalFiles, args.File)
 
+	oldName := args.File
+	str := strings.Split(oldName, "-")
+	newName := str[0] + "-out-" + str[2]
+	err := os.Rename(oldName, newName)
+	if err != nil {
+		log.Println(err)
+	}
+
+	c.finalFiles = append(c.finalFiles, newName)
 	reply.Y = 1
-	fmt.Println(c.reduceFiles, c.finalFiles)
+
+	return nil
+}
+
+func (c *Coordinator) Shutdown(args *ExitArgs, reply *ExitReply) error {
+	if args.X {
+		reply.Y = true
+		atomic.AddInt32(&c.workerNum, -1)
+		if c.workerNum == 0 {
+			c.exitValue.Store(1)
+		}
+	}
+
 	return nil
 }
 
@@ -259,6 +287,10 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	if c.exitValue.Load().(int) == 1 {
+		ret = true
+		time.Sleep(3 * time.Second)
+	}
 
 	return ret
 }
@@ -271,6 +303,8 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	workerDone := make([]chan int, 20)
+	var e atomic.Value
+	e.Store(0)
 
 	c := Coordinator{
 		fileName: files,
@@ -278,6 +312,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 		workerDone:  workerDone,
 		reduceFiles: make([][]string, nReduce),
+
+		exitValue: e,
 	}
 
 	// Your code here.

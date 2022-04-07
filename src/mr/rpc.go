@@ -80,6 +80,15 @@ type FinishReduceReply struct {
 	Y int
 }
 
+// Ask for shutdown
+type ExitArgs struct {
+	X bool
+}
+
+type ExitReply struct {
+	Y bool
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since

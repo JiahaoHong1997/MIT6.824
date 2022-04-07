@@ -23,7 +23,7 @@ type Coordinator struct {
 	lock           sync.Mutex
 	jobNum         int
 
-	workerNum    int32
+	workerNum    int
 	workerDone   []chan int
 	rejectResult []bool
 
@@ -55,7 +55,7 @@ func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 		reply.Y = int(c.workerNum)
 		c.workerDone[reply.Y] = make(chan int)
 		c.rejectResult = append(c.rejectResult, false)
-		atomic.AddInt32(&c.workerNum, 1)
+		c.workerNum++
 
 		if int(c.workerNum) > len(c.workerDone) {
 			t := make([]chan int, 20)
@@ -200,7 +200,9 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 func (c *Coordinator) Shutdown(args *ExitArgs, reply *ExitReply) error {
 	if args.X {
 		reply.Y = true
-		atomic.AddInt32(&c.workerNum, -1)
+		c.lock.Lock()
+		defer c.lock.Lock()
+		c.workerNum--
 		if c.workerNum == 0 {
 			c.exitValue.Store(1)
 		}

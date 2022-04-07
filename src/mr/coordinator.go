@@ -3,6 +3,7 @@ package mr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -25,7 +26,7 @@ type Coordinator struct {
 	workerDone   []chan int
 	rejectResult []bool
 
-	fileLock             sync.Mutex
+	mapFinished          bool
 	reduceFiles          [][]string
 	unFinishedReduceFile [][]string
 	finalFiles           []string
@@ -120,6 +121,9 @@ func (c *Coordinator) FinishMap(args *FinishMapArgs, reply *FinishMapReply) erro
 	}
 
 	reply.Y = 1
+	if len(c.fileName) == 0 && len(c.unfinishedFile) == 1 {
+		c.mapFinished = true
+	}
 
 	return nil
 }
@@ -128,11 +132,19 @@ func (c *Coordinator) ReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) e
 	if len(c.reduceFiles) > 0 {
 		c.lock.Lock()
 		defer c.lock.Unlock()
+		if !c.mapFinished {
+			return nil
+		}
+
 		n := len(c.reduceFiles)
 		reply.ReducerFile = c.reduceFiles[n-1]
 		reply.Finished = false
+		reply.JobId = c.jobNum
+
 		c.unFinishedReduceFile = append(c.unFinishedReduceFile, c.reduceFiles[n-1])
 		c.reduceFiles = c.reduceFiles[:n-1]
+		c.rejectResult[args.WorkerNum] = false
+		c.jobNum++
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -153,14 +165,19 @@ func (c *Coordinator) FinishReduce(args *FinishReduceArgs, reply *FinishReduceRe
 		return nil
 	}
 
-	c.fileLock.Lock()
-	defer c.fileLock.Unlock()
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	if c.rejectResult[args.WorkerNum] {
+		c.rejectResult[args.WorkerNum] = false
+		return nil
+	}
 
 	c.workerDone[args.WorkerNum] <- 1
 	c.finalFiles = append(c.finalFiles, args.File)
 
 	reply.Y = 1
-
+	fmt.Println(c.reduceFiles, c.finalFiles)
 	return nil
 }
 
@@ -182,7 +199,6 @@ func ifMapFinished(c *Coordinator, ctx context.Context, cancel context.CancelFun
 	case <-c.workerDone[workerNum]:
 		c.lock.Lock()
 		defer c.lock.Unlock()
-
 		for i := 0; i < len(c.unfinishedFile); i++ {
 			if c.unfinishedFile[i] == filename {
 				c.unfinishedFile = append(c.unfinishedFile[:i], c.unfinishedFile[i+1:]...)
@@ -203,6 +219,7 @@ func ifReduceFinished(c *Coordinator, ctx context.Context, cancel context.Cancel
 			if c.unFinishedReduceFile[i][0] == reduceFiles[0] {
 				c.unFinishedReduceFile = append(c.unFinishedReduceFile[:i], c.unFinishedReduceFile[i+1:]...)
 				c.reduceFiles = append(c.reduceFiles, reduceFiles)
+				c.rejectResult[workerNum] = true
 				return
 			}
 		}

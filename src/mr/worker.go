@@ -44,16 +44,24 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 
 	workerNum := CallHello()
-	fmt.Println(workerNum)
-	finished, fileName, nReducer, jobId := CallMapTask(workerNum)
-	fmt.Println(finished, fileName, jobId)
+	//fmt.Println(workerNum)
+	mapFinished, fileName, nReducer, jobId := CallMapTask(workerNum)
+	//fmt.Println(finished, fileName, jobId)
 
-	if !finished && fileName != "" {
-		reduceFiles, ok := mapTask(fileName, nReducer, jobId, mapf)
-		fmt.Println(reduceFiles, ok)
-		CallFinishMap(reduceFiles, ok, workerNum, jobId)
+	for !mapFinished {
+		if fileName != "" {
+			reduceFiles, ok := mapTask(fileName, nReducer, jobId, mapf)
+			fmt.Println(reduceFiles, ok)
+			CallFinishMap(reduceFiles, ok, workerNum, jobId)
+		}
+		time.Sleep(1 * time.Second)
+		mapFinished, fileName, nReducer, jobId = CallMapTask(workerNum)
 	}
 
+	ReduceFinished, fileNames, jobId := CallReduceTask(workerNum)
+	fmt.Println(ReduceFinished, fileNames, jobId)
+	time.Sleep(10 * time.Second)
+	CallFinishReduce(strconv.Itoa(jobId), true, workerNum)
 	time.Sleep(1 * time.Hour)
 }
 
@@ -137,23 +145,27 @@ func CallFinishMap(files []string, f bool, workerNum int, jobId int) {
 }
 
 // CallReduceTask: Try to get reduce task until get one or the whole work finished
-func CallReduceTask(workerNum int) (bool, []string) {
+func CallReduceTask(workerNum int) (bool, []string, int) {
 	args := ReduceTaskArgs{}
 	args.WorkerNum = workerNum
 	reply := ReduceTaskReply{}
+	fmt.Println(22222)
 	ok := call("Coordinator.ReduceTask", &args, &reply)
-	if ok && reply.ReducerFile != nil && !reply.Finished {
-		return false, reply.ReducerFile
+	fmt.Println(33333)
+	if ok && reply.ReducerFile != nil {
+		return false, reply.ReducerFile, reply.JobId
 	}
 
-	for ok && reply.ReducerFile == nil && !reply.Finished {
+	for ok && !reply.Finished {
+		fmt.Println(44444)
+		time.Sleep(1 * time.Second)
 		ok = call("Coordinator.ReduceTask", &args, &reply)
+		if ok && reply.ReducerFile != nil {
+			return false, reply.ReducerFile, reply.JobId
+		}
 	}
 
-	if reply.Finished {
-		return true, nil
-	}
-	return false, reply.ReducerFile
+	return true, nil, reply.JobId
 }
 
 // CallFinishReduce: Reply to coordinator whether finish reduce task or not, after that, worker turn to CallReduceTask again
@@ -194,7 +206,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-//
+// mapTask: The function to handel map tasks
 func mapTask(filename string, nReducer int, jobId int, mapf func(string, string) []KeyValue) ([]string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

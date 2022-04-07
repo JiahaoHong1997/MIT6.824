@@ -66,6 +66,7 @@ type ReduceTaskArgs struct {
 type ReduceTaskReply struct {
 	Finished    bool
 	ReducerFile []string
+	JobId       int
 }
 
 // Finish Reduce Task

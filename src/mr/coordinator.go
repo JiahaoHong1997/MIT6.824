@@ -52,7 +52,7 @@ func (c *Coordinator) Hello(args *HelloArgs, reply *HelloReply) error {
 	if args.X == "hongjiahao" {
 		c.lock.Lock()
 		defer c.lock.Unlock()
-		reply.Y = int(c.workerNum)
+		reply.Y = c.workerNum
 		c.workerDone[reply.Y] = make(chan int)
 		c.rejectResult = append(c.rejectResult, false)
 		c.workerNum++
